@@ -343,7 +343,7 @@ function currentRomawiYear() {
    terbesar — logic regex-nya sama persis kayak versi server.py. */
 
 const GOOGLE_CLIENT_ID = '484128098878-mi51dupj424cvplvj87ffm7cpl7ff799.apps.googleusercontent.com';
-const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
+const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.file';
 
 // Folder ID diambil dari URL folder Drive: .../folders/<FOLDER_ID>
 const FOLDER_IDS = {
@@ -485,6 +485,83 @@ async function getMaxNumberFromDrive(folderId) {
     .filter(n => n !== null);
   return numbers.length ? Math.max(...numbers) : 0;
 }
+
+/* Convert 1 file docx (blob) jadi PDF lewat Google Drive:
+   1) upload sebagai Google Docs (Drive yang render layoutnya)
+   2) export hasil Google Docs itu sebagai PDF
+   3) HAPUS file Google Docs sementara tadi — selalu dicoba, sukses
+      ataupun export-nya gagal di tengah jalan, biar gak ninggalin
+      bekas apa pun di Drive. */
+async function convertDocxBlobToPdfViaDrive(docxBlob, baseFileName) {
+  if (!driveAccessToken) {
+    throw new Error('Belum login Google Drive');
+  }
+
+  const metadata = {
+    name: baseFileName.replace(/\.docx$/i, ''),
+    mimeType: 'application/vnd.google-apps.document', // minta Drive convert ke Google Docs
+  };
+  const boundary = 'drivepdf-' + Date.now();
+  const docxBase64 = await blobToBase64(docxBlob);
+
+  const multipartBody =
+    `--${boundary}\r\n` +
+    'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+    JSON.stringify(metadata) + '\r\n' +
+    `--${boundary}\r\n` +
+    'Content-Type: application/vnd.openxmlformats-officedocument.wordprocessingml.document\r\n' +
+    'Content-Transfer-Encoding: base64\r\n\r\n' +
+    docxBase64 + '\r\n' +
+    `--${boundary}--`;
+
+  const uploadRes = await fetch(
+    'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${driveAccessToken}`,
+        'Content-Type': `multipart/related; boundary=${boundary}`,
+      },
+      body: multipartBody,
+    }
+  );
+  if (!uploadRes.ok) {
+    throw new Error(`Upload sementara ke Drive gagal (HTTP ${uploadRes.status})`);
+  }
+  const uploaded = await uploadRes.json();
+  const tempFileId = uploaded.id;
+
+  try {
+    const exportRes = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${tempFileId}/export?mimeType=application/pdf`,
+      { headers: { Authorization: `Bearer ${driveAccessToken}` } }
+    );
+    if (!exportRes.ok) {
+      throw new Error(`Export ke PDF gagal (HTTP ${exportRes.status})`);
+    }
+    return await exportRes.blob();
+  } finally {
+    // Selalu coba hapus, apa pun hasil export-nya di atas.
+    try {
+      await fetch(`https://www.googleapis.com/drive/v3/files/${tempFileId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${driveAccessToken}` },
+      });
+    } catch {
+      console.warn('Gagal hapus file sementara di Drive, id:', tempFileId);
+    }
+  }
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(',')[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
 
 /* Ambil nomor lanjutan otomatis: coba Google Drive dulu (kalau udah
    login), fallback ke server lokal lama (server.py, buat yang masih
@@ -777,218 +854,244 @@ function setStatus(msg, kind) {
   el.className = 'status-msg' + (kind ? ' ' + kind : '');
 }
 
-async function generateDocx() {
+async function buildDocxBlob() {
   const mode = getMode();
+  const items = collectItems();
+  if (items.length === 0) {
+    throw new Error('Tambahkan minimal 1 item sebelum download.');
+  }
+
+  const templateB64 = mode.templateVar();
+  if (!templateB64) {
+    throw new Error(`Template belum diisi. Isi base64 di templates/${fileForMode(mode)} pada variabel ${mode.templateVarName}.`);
+  }
+
+  const zip = await JSZip.loadAsync(b64ToArrayBuffer(templateB64));
+  let xml = await zip.file('word/document.xml').async('string');
+
+  /* ---- 1. Clone baris item, anchor {{NO}} ---- */
+  const idxNo = xml.indexOf('{{NO}}');
+  const trStart = xml.lastIndexOf('<w:tr ', idxNo);
+  const trEnd = xml.indexOf('</w:tr>', idxNo) + '</w:tr>'.length;
+  const rowTemplate = xml.slice(trStart, trEnd);
+
+  let rowsXml = '';
+  let subtotal = 0;
+  items.forEach((item, i) => {
+    const jumlah = item.qty * item.harga;
+    subtotal += jumlah;
+    let row = rowTemplate;
+    row = row.split('{{NO}}').join(i + 1);
+    row = row.split(`{{${mode.itemNameToken}}}`).join(escapeXml(item.uraian || '-'));
+    row = row.split(`{{${mode.itemQtyToken}}}`).join(escapeXml(String(item.qty)));
+    row = row.split('{{HARGA}}').join(escapeXml(formatAngka(item.harga)));
+    row = row.split('{{JUMLAH}}').join(escapeXml(formatAngka(jumlah)));
+    rowsXml += row;
+  });
+  xml = xml.slice(0, trStart) + rowsXml + xml.slice(trEnd);
+
+  /* ---- 2. Hitung diskon & PPN ---- */
+  const diskonType = document.getElementById('diskonType').value;
+  const diskonInput = diskonType === 'percent'
+    ? (parseFloat(document.getElementById('diskon').value) || 0)
+    : parseRibuan(document.getElementById('diskon').value);
+  const diskonNominal = diskonType === 'percent' ? subtotal * diskonInput / 100 : diskonInput;
+  const afterDiskon = subtotal - diskonNominal;
+  const ppnPercent = parseFloat(document.getElementById('ppn').value) || 0;
+
+  /* ---- 3. Baris DISKON ---- */
+  if (mode.diskonStrategy === 'clone') {
+    // Baris DISKON tidak ada di template; di-clone dari baris PPN (hanya kalau nominal > 0)
+    if (diskonNominal > 0) {
+      const ppnRow = findRow(xml, '{{PPN_LABEL}}');
+      if (ppnRow) {
+        const diskonRow = ppnRow.template
+          .split('{{PPN_LABEL}}').join('DISKON')
+          .split('{{PPN}}').join(escapeXml(formatAngka(diskonNominal)));
+        xml = xml.slice(0, ppnRow.trStart) + diskonRow + xml.slice(ppnRow.trStart);
+      }
+    }
+  } else {
+    // Baris DISKON sudah ada sebagai placeholder {{DISKON}} sendiri di template
+    if (diskonNominal === 0) {
+      xml = removeRowByAnchor(xml, '{{DISKON}}');
+    } else {
+      xml = xml.split('{{DISKON}}').join(escapeXml(formatAngka(diskonNominal)));
+    }
+  }
+
+  /* ---- 4. PPN <= 0 => hapus baris SUB TOTAL & PPN; else isi ---- */
+  let ppnNominal = 0;
+  let grandTotal;
+  if (ppnPercent > 0) {
+    ppnNominal = afterDiskon * ppnPercent / 100;
+    grandTotal = afterDiskon + ppnNominal;
+    xml = xml.split('{{SUBTOTAL}}').join(escapeXml(formatAngka(subtotal)));
+    xml = xml.split('{{PPN_LABEL}}').join(escapeXml(mode.ppnLabelFormat(ppnPercent)));
+    xml = xml.split('{{PPN}}').join(escapeXml(formatAngka(ppnNominal)));
+  } else {
+    grandTotal = afterDiskon;
+    xml = removeRowByAnchor(xml, '{{SUBTOTAL}}');
+    // anchor PPN row: coba {{PPN_LABEL}} dulu, fallback ke {{PPN}}
+    xml = xml.indexOf('{{PPN_LABEL}}') !== -1
+      ? removeRowByAnchor(xml, '{{PPN_LABEL}}')
+      : removeRowByAnchor(xml, '{{PPN}}');
+  }
+
+  xml = xml.split('{{GRANDTOTAL}}').join(escapeXml(formatAngka(grandTotal)));
+
+  /* ---- 5. Section Keterangan & toggle Tanpa Tanda Tangan ---- */
+  // PENTING: blok ini HARUS jalan SEBELUM replacement skalar {{NAMA_TTD}}
+  // di bawah, karena removeSignatureImage() nyari gambar tanda tangan
+  // lewat anchor posisi "<w:drawing> terdekat sebelum {{NAMA_TTD}}" —
+  // kalau placeholder itu sudah ditimpa jadi nama beneran duluan, anchornya
+  // hilang dan toggle-nya jadi no-op (gambar gak pernah kehapus).
+
+  // Selalu bersihkan dulu paragraf {{TTD_IMG}} peninggalan percobaan lama
+  // yang gak nyambung ke gambar tanda tangan manapun — aman dipanggil
+  // walau tag-nya gak ada di template tertentu (no-op kalau tidak ketemu).
+  xml = removeParagraphByAnchor(xml, '{{TTD_IMG}}');
+
+  const keteranganLines = document.getElementById('keterangan').value
+    .split('\n')
+    .map(s => s.trim())
+    .filter(s => s.length > 0);
+
+  if (keteranganLines.length === 0) {
+    // Semua baris kosong -> hapus SELURUH text box Keterangan (termasuk
+    // kedua salinan Choice/Fallback kalau Word bikin AlternateContent),
+    // pakai findEnclosingRun biar gak kepotong di run bersarang.
+    xml = removeEnclosingRun(xml, '{{KETERANGAN_ITEM}}');
+  } else {
+    // Ada isi -> clone paragraf bullet per baris keterangan, buang
+    // <w:vanish/> dari hasil clone. Diulang selama anchor masih ketemu,
+    // karena bisa ada 2 salinan (Choice + Fallback) yang keduanya perlu
+    // diisi konsisten.
+    while (xml.indexOf('{{KETERANGAN_ITEM}}') !== -1) {
+      const para = findParagraph(xml, '{{KETERANGAN_ITEM}}');
+      if (!para) break;
+      let itemsXml = '';
+      keteranganLines.forEach(line => {
+        let p = para.template.replace(/<w:vanish\/>/g, ''); // buang SEMUA vanish di paragraf ini
+        p = p.split('{{KETERANGAN_ITEM}}').join(escapeXml(line));
+        itemsXml += p;
+      });
+      xml = xml.slice(0, para.pStart) + itemsXml + xml.slice(para.pEnd);
+    }
+  }
+
+  // Nama & kontak penandatangan (teks) tetap muncul di kedua mode; yang
+  // dihapus HANYA gambar tanda tangan+stempel, karena dokumen ini
+  // rencananya mau ditandatangani basah manual.
+  if (document.getElementById('signMode').value === 'nosign') {
+    xml = removeSignatureImage(xml);
+  }
+
+  /* ---- 6. Replacement skalar ---- */
+  const nomor = document.getElementById('nomor').value.trim() || '-';
+  const namaClient = document.getElementById('namaClient').value.trim() || '-';
+  const tanggalIso = document.getElementById('tanggal').value;
+  const tanggalIndo = formatTanggalIndo(tanggalIso) || '-';
+  const namaTtd = document.getElementById('namaTtd').value.trim() || mode.defaultNamaTtd;
+  const terbilangText = terbilangRupiah(grandTotal);
+
+  xml = xml.split('{{NOMOR}}').join(escapeXml(nomor));
+  xml = xml.split('{{TANGGAL}}').join(escapeXml(tanggalIndo));
+  xml = xml.split(`{{${mode.namaClientToken}}}`).join(escapeXml(namaClient));
+  xml = xml.split('{{TERBILANG}}').join(escapeXml(terbilangText));
+  xml = xml.split('{{NAMA_TTD}}').join(escapeXml(namaTtd));
+
+  if (mode.hasKontakTtd) {
+    const kontakTtd = document.getElementById('kontakTtd').value.trim() || mode.defaultKontakTtd;
+    xml = xml.split('{{KONTAK_TTD}}').join(escapeXml(kontakTtd));
+  }
+
+  if (mode.showPoFields) {
+    const poDate = document.getElementById('poDate').value.trim() || mode.poDateDefault || '-';
+    const poNo = document.getElementById('poNo').value.trim() || mode.poNoDefault || '-';
+    xml = xml.split(`{{${mode.poDateToken}}}`).join(escapeXml(poDate));
+    xml = xml.split(`{{${mode.poNoToken}}}`).join(escapeXml(poNo));
+  }
+
+  if (mode.showPerihalLampiran) {
+    const perihal = document.getElementById('perihal').value.trim() || 'Surat Penawaran';
+    xml = xml.split('{{PERIHAL}}').join(escapeXml(perihal));
+  }
+  if (mode.showLampiran) {
+    const lampiran = document.getElementById('lampiran').value.trim() || '-';
+    xml = xml.split('{{LAMPIRAN}}').join(escapeXml(lampiran));
+  }
+
+  if (mode.hasAlamat) {
+    const alamatClient = document.getElementById('alamatClient').value.trim() || '-';
+    if (mode.alamatMultiline) {
+      // Alamat multi-baris -> pecah jadi beberapa <w:t> dipisah <w:br/> dalam run yang sama
+      const alamatRuns = alamatClient
+        .split('\n')
+        .map(line => `<w:t xml:space="preserve">${escapeXml(line)}</w:t>`)
+        .join('<w:br/>');
+      xml = xml.split('<w:t>{{ALAMAT_CLIENT}}</w:t>').join(alamatRuns);
+      // fallback kalau template tidak membungkus persis seperti di atas
+      xml = xml.split('{{ALAMAT_CLIENT}}').join(escapeXml(alamatClient));
+    } else {
+      xml = xml.split('{{ALAMAT_CLIENT}}').join(escapeXml(alamatClient));
+    }
+  }
+
+  zip.file('word/document.xml', xml);
+  const blob = await zip.generateAsync({
+    type: 'blob',
+    mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  });
+
+  const fileName = buildFileName();
+  return { blob, fileName };
+}
+
+function downloadBlob(blob, fileName) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+async function generateDocx() {
   const btn = document.getElementById('generateBtn');
-
   try {
-    const items = collectItems();
-    if (items.length === 0) {
-      setStatus('Tambahkan minimal 1 item sebelum download.', 'error');
-      return;
-    }
-
-    const templateB64 = mode.templateVar();
-    if (!templateB64) {
-      setStatus(`Template belum diisi. Isi base64 di templates/${fileForMode(mode)} pada variabel ${mode.templateVarName}.`, 'error');
-      return;
-    }
-
     btn.disabled = true;
     setStatus('Membuat dokumen...', '');
-
-    const zip = await JSZip.loadAsync(b64ToArrayBuffer(templateB64));
-    let xml = await zip.file('word/document.xml').async('string');
-
-    /* ---- 1. Clone baris item, anchor {{NO}} ---- */
-    const idxNo = xml.indexOf('{{NO}}');
-    const trStart = xml.lastIndexOf('<w:tr ', idxNo);
-    const trEnd = xml.indexOf('</w:tr>', idxNo) + '</w:tr>'.length;
-    const rowTemplate = xml.slice(trStart, trEnd);
-
-    let rowsXml = '';
-    let subtotal = 0;
-    items.forEach((item, i) => {
-      const jumlah = item.qty * item.harga;
-      subtotal += jumlah;
-      let row = rowTemplate;
-      row = row.split('{{NO}}').join(i + 1);
-      row = row.split(`{{${mode.itemNameToken}}}`).join(escapeXml(item.uraian || '-'));
-      row = row.split(`{{${mode.itemQtyToken}}}`).join(escapeXml(String(item.qty)));
-      row = row.split('{{HARGA}}').join(escapeXml(formatAngka(item.harga)));
-      row = row.split('{{JUMLAH}}').join(escapeXml(formatAngka(jumlah)));
-      rowsXml += row;
-    });
-    xml = xml.slice(0, trStart) + rowsXml + xml.slice(trEnd);
-
-    /* ---- 2. Hitung diskon & PPN ---- */
-    const diskonType = document.getElementById('diskonType').value;
-    const diskonInput = diskonType === 'percent'
-      ? (parseFloat(document.getElementById('diskon').value) || 0)
-      : parseRibuan(document.getElementById('diskon').value);
-    const diskonNominal = diskonType === 'percent' ? subtotal * diskonInput / 100 : diskonInput;
-    const afterDiskon = subtotal - diskonNominal;
-    const ppnPercent = parseFloat(document.getElementById('ppn').value) || 0;
-
-    /* ---- 3. Baris DISKON ---- */
-    if (mode.diskonStrategy === 'clone') {
-      // Baris DISKON tidak ada di template; di-clone dari baris PPN (hanya kalau nominal > 0)
-      if (diskonNominal > 0) {
-        const ppnRow = findRow(xml, '{{PPN_LABEL}}');
-        if (ppnRow) {
-          const diskonRow = ppnRow.template
-            .split('{{PPN_LABEL}}').join('DISKON')
-            .split('{{PPN}}').join(escapeXml(formatAngka(diskonNominal)));
-          xml = xml.slice(0, ppnRow.trStart) + diskonRow + xml.slice(ppnRow.trStart);
-        }
-      }
-    } else {
-      // Baris DISKON sudah ada sebagai placeholder {{DISKON}} sendiri di template
-      if (diskonNominal === 0) {
-        xml = removeRowByAnchor(xml, '{{DISKON}}');
-      } else {
-        xml = xml.split('{{DISKON}}').join(escapeXml(formatAngka(diskonNominal)));
-      }
-    }
-
-    /* ---- 4. PPN <= 0 => hapus baris SUB TOTAL & PPN; else isi ---- */
-    let ppnNominal = 0;
-    let grandTotal;
-    if (ppnPercent > 0) {
-      ppnNominal = afterDiskon * ppnPercent / 100;
-      grandTotal = afterDiskon + ppnNominal;
-      xml = xml.split('{{SUBTOTAL}}').join(escapeXml(formatAngka(subtotal)));
-      xml = xml.split('{{PPN_LABEL}}').join(escapeXml(mode.ppnLabelFormat(ppnPercent)));
-      xml = xml.split('{{PPN}}').join(escapeXml(formatAngka(ppnNominal)));
-    } else {
-      grandTotal = afterDiskon;
-      xml = removeRowByAnchor(xml, '{{SUBTOTAL}}');
-      // anchor PPN row: coba {{PPN_LABEL}} dulu, fallback ke {{PPN}}
-      xml = xml.indexOf('{{PPN_LABEL}}') !== -1
-        ? removeRowByAnchor(xml, '{{PPN_LABEL}}')
-        : removeRowByAnchor(xml, '{{PPN}}');
-    }
-
-    xml = xml.split('{{GRANDTOTAL}}').join(escapeXml(formatAngka(grandTotal)));
-
-    /* ---- 5. Section Keterangan & toggle Tanpa Tanda Tangan ---- */
-    // PENTING: blok ini HARUS jalan SEBELUM replacement skalar {{NAMA_TTD}}
-    // di bawah, karena removeSignatureImage() nyari gambar tanda tangan
-    // lewat anchor posisi "<w:drawing> terdekat sebelum {{NAMA_TTD}}" —
-    // kalau placeholder itu sudah ditimpa jadi nama beneran duluan, anchornya
-    // hilang dan toggle-nya jadi no-op (gambar gak pernah kehapus).
-
-    // Selalu bersihkan dulu paragraf {{TTD_IMG}} peninggalan percobaan lama
-    // yang gak nyambung ke gambar tanda tangan manapun — aman dipanggil
-    // walau tag-nya gak ada di template tertentu (no-op kalau tidak ketemu).
-    xml = removeParagraphByAnchor(xml, '{{TTD_IMG}}');
-
-    const keteranganLines = document.getElementById('keterangan').value
-      .split('\n')
-      .map(s => s.trim())
-      .filter(s => s.length > 0);
-
-    if (keteranganLines.length === 0) {
-      // Semua baris kosong -> hapus SELURUH text box Keterangan (termasuk
-      // kedua salinan Choice/Fallback kalau Word bikin AlternateContent),
-      // pakai findEnclosingRun biar gak kepotong di run bersarang.
-      xml = removeEnclosingRun(xml, '{{KETERANGAN_ITEM}}');
-    } else {
-      // Ada isi -> clone paragraf bullet per baris keterangan, buang
-      // <w:vanish/> dari hasil clone. Diulang selama anchor masih ketemu,
-      // karena bisa ada 2 salinan (Choice + Fallback) yang keduanya perlu
-      // diisi konsisten.
-      while (xml.indexOf('{{KETERANGAN_ITEM}}') !== -1) {
-        const para = findParagraph(xml, '{{KETERANGAN_ITEM}}');
-        if (!para) break;
-        let itemsXml = '';
-        keteranganLines.forEach(line => {
-          let p = para.template.replace(/<w:vanish\/>/g, ''); // buang SEMUA vanish di paragraf ini
-          p = p.split('{{KETERANGAN_ITEM}}').join(escapeXml(line));
-          itemsXml += p;
-        });
-        xml = xml.slice(0, para.pStart) + itemsXml + xml.slice(para.pEnd);
-      }
-    }
-
-    // Nama & kontak penandatangan (teks) tetap muncul di kedua mode; yang
-    // dihapus HANYA gambar tanda tangan+stempel, karena dokumen ini
-    // rencananya mau ditandatangani basah manual.
-    if (document.getElementById('signMode').value === 'nosign') {
-      xml = removeSignatureImage(xml);
-    }
-
-    /* ---- 6. Replacement skalar ---- */
-    const nomor = document.getElementById('nomor').value.trim() || '-';
-    const namaClient = document.getElementById('namaClient').value.trim() || '-';
-    const tanggalIso = document.getElementById('tanggal').value;
-    const tanggalIndo = formatTanggalIndo(tanggalIso) || '-';
-    const namaTtd = document.getElementById('namaTtd').value.trim() || mode.defaultNamaTtd;
-    const terbilangText = terbilangRupiah(grandTotal);
-
-    xml = xml.split('{{NOMOR}}').join(escapeXml(nomor));
-    xml = xml.split('{{TANGGAL}}').join(escapeXml(tanggalIndo));
-    xml = xml.split(`{{${mode.namaClientToken}}}`).join(escapeXml(namaClient));
-    xml = xml.split('{{TERBILANG}}').join(escapeXml(terbilangText));
-    xml = xml.split('{{NAMA_TTD}}').join(escapeXml(namaTtd));
-
-    if (mode.hasKontakTtd) {
-      const kontakTtd = document.getElementById('kontakTtd').value.trim() || mode.defaultKontakTtd;
-      xml = xml.split('{{KONTAK_TTD}}').join(escapeXml(kontakTtd));
-    }
-
-    if (mode.showPoFields) {
-      const poDate = document.getElementById('poDate').value.trim() || mode.poDateDefault || '-';
-      const poNo = document.getElementById('poNo').value.trim() || mode.poNoDefault || '-';
-      xml = xml.split(`{{${mode.poDateToken}}}`).join(escapeXml(poDate));
-      xml = xml.split(`{{${mode.poNoToken}}}`).join(escapeXml(poNo));
-    }
-
-    if (mode.showPerihalLampiran) {
-      const perihal = document.getElementById('perihal').value.trim() || 'Surat Penawaran';
-      xml = xml.split('{{PERIHAL}}').join(escapeXml(perihal));
-    }
-    if (mode.showLampiran) {
-      const lampiran = document.getElementById('lampiran').value.trim() || '-';
-      xml = xml.split('{{LAMPIRAN}}').join(escapeXml(lampiran));
-    }
-
-    if (mode.hasAlamat) {
-      const alamatClient = document.getElementById('alamatClient').value.trim() || '-';
-      if (mode.alamatMultiline) {
-        // Alamat multi-baris -> pecah jadi beberapa <w:t> dipisah <w:br/> dalam run yang sama
-        const alamatRuns = alamatClient
-          .split('\n')
-          .map(line => `<w:t xml:space="preserve">${escapeXml(line)}</w:t>`)
-          .join('<w:br/>');
-        xml = xml.split('<w:t>{{ALAMAT_CLIENT}}</w:t>').join(alamatRuns);
-        // fallback kalau template tidak membungkus persis seperti di atas
-        xml = xml.split('{{ALAMAT_CLIENT}}').join(escapeXml(alamatClient));
-      } else {
-        xml = xml.split('{{ALAMAT_CLIENT}}').join(escapeXml(alamatClient));
-      }
-    }
-
-    zip.file('word/document.xml', xml);
-    const blob = await zip.generateAsync({
-      type: 'blob',
-      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-    });
-
-    const fileName = buildFileName();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = fileName;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-
+    const { blob, fileName } = await buildDocxBlob();
+    downloadBlob(blob, fileName);
     setStatus(`Berhasil! File "${fileName}" sudah didownload.`, 'success');
   } catch (err) {
     console.error(err);
     setStatus('Gagal membuat dokumen: ' + err.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function generatePdf() {
+  const btn = document.getElementById('generatePdfBtn');
+  try {
+    btn.disabled = true;
+    if (!driveAccessToken) {
+      setStatus('Login Google Drive dulu buat download PDF (tombol di atas).', 'error');
+      return;
+    }
+    setStatus('Membuat dokumen & convert ke PDF...', '');
+    const { blob, fileName } = await buildDocxBlob();
+    const pdfBlob = await convertDocxBlobToPdfViaDrive(blob, fileName);
+    const pdfFileName = fileName.replace(/\.docx$/i, '.pdf');
+    downloadBlob(pdfBlob, pdfFileName);
+    setStatus(`Berhasil! File "${pdfFileName}" sudah didownload.`, 'success');
+  } catch (err) {
+    console.error(err);
+    setStatus('Gagal membuat PDF: ' + err.message, 'error');
   } finally {
     btn.disabled = false;
   }
@@ -1218,6 +1321,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   document.getElementById('addRowBtn').addEventListener('click', () => addItemRow());
   document.getElementById('generateBtn').addEventListener('click', generateDocx);
+  document.getElementById('generatePdfBtn').addEventListener('click', generatePdf);
 
   document.getElementById('refreshNomorBtn').addEventListener('click', async () => {
     const btn = document.getElementById('refreshNomorBtn');
