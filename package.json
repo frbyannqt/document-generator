@@ -1,0 +1,8 @@
+{
+  "name": "generator-dokumen",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@ilovepdf/ilovepdf-nodejs": "^0.3.1"
+  }
+}
