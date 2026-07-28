@@ -343,7 +343,7 @@ function currentRomawiYear() {
    terbesar — logic regex-nya sama persis kayak versi server.py. */
 
 const GOOGLE_CLIENT_ID = '484128098878-mi51dupj424cvplvj87ffm7cpl7ff799.apps.googleusercontent.com';
-const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly https://www.googleapis.com/auth/drive.file';
+const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
 
 // Folder ID diambil dari URL folder Drive: .../folders/<FOLDER_ID>
 const FOLDER_IDS = {
@@ -484,82 +484,6 @@ async function getMaxNumberFromDrive(folderId) {
     })
     .filter(n => n !== null);
   return numbers.length ? Math.max(...numbers) : 0;
-}
-
-/* Convert 1 file docx (blob) jadi PDF lewat Google Drive:
-   1) upload sebagai Google Docs (Drive yang render layoutnya)
-   2) export hasil Google Docs itu sebagai PDF
-   3) HAPUS file Google Docs sementara tadi — selalu dicoba, sukses
-      ataupun export-nya gagal di tengah jalan, biar gak ninggalin
-      bekas apa pun di Drive. */
-async function convertDocxBlobToPdfViaDrive(docxBlob, baseFileName) {
-  if (!driveAccessToken) {
-    throw new Error('Belum login Google Drive');
-  }
-
-  const metadata = {
-    name: baseFileName.replace(/\.docx$/i, ''),
-    mimeType: 'application/vnd.google-apps.document', // minta Drive convert ke Google Docs
-  };
-  const boundary = 'drivepdf-' + Date.now();
-  const docxBase64 = await blobToBase64(docxBlob);
-
-  const multipartBody =
-    `--${boundary}\r\n` +
-    'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
-    JSON.stringify(metadata) + '\r\n' +
-    `--${boundary}\r\n` +
-    'Content-Type: application/vnd.openxmlformats-officedocument.wordprocessingml.document\r\n' +
-    'Content-Transfer-Encoding: base64\r\n\r\n' +
-    docxBase64 + '\r\n' +
-    `--${boundary}--`;
-
-  const uploadRes = await fetch(
-    'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id',
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${driveAccessToken}`,
-        'Content-Type': `multipart/related; boundary=${boundary}`,
-      },
-      body: multipartBody,
-    }
-  );
-  if (!uploadRes.ok) {
-    throw new Error(`Upload sementara ke Drive gagal (HTTP ${uploadRes.status})`);
-  }
-  const uploaded = await uploadRes.json();
-  const tempFileId = uploaded.id;
-
-  try {
-    const exportRes = await fetch(
-      `https://www.googleapis.com/drive/v3/files/${tempFileId}/export?mimeType=application/pdf`,
-      { headers: { Authorization: `Bearer ${driveAccessToken}` } }
-    );
-    if (!exportRes.ok) {
-      throw new Error(`Export ke PDF gagal (HTTP ${exportRes.status})`);
-    }
-    return await exportRes.blob();
-  } finally {
-    // Selalu coba hapus, apa pun hasil export-nya di atas.
-    try {
-      await fetch(`https://www.googleapis.com/drive/v3/files/${tempFileId}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${driveAccessToken}` },
-      });
-    } catch {
-      console.warn('Gagal hapus file sementara di Drive, id:', tempFileId);
-    }
-  }
-}
-
-function blobToBase64(blob) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result.split(',')[1]);
-    reader.onerror = reject;
-    reader.readAsDataURL(blob);
-  });
 }
 
 
@@ -1059,6 +983,15 @@ function downloadBlob(blob, fileName) {
   URL.revokeObjectURL(url);
 }
 
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(',')[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
 async function generateDocx() {
   const btn = document.getElementById('generateBtn');
   try {
@@ -1079,13 +1012,20 @@ async function generatePdf() {
   const btn = document.getElementById('generatePdfBtn');
   try {
     btn.disabled = true;
-    if (!driveAccessToken) {
-      setStatus('Login Google Drive dulu buat download PDF (tombol di atas).', 'error');
-      return;
-    }
     setStatus('Membuat dokumen & convert ke PDF...', '');
     const { blob, fileName } = await buildDocxBlob();
-    const pdfBlob = await convertDocxBlobToPdfViaDrive(blob, fileName);
+    const fileBase64 = await blobToBase64(blob);
+
+    const res = await fetch('/api/convert-pdf', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fileName, fileBase64 }),
+    });
+    if (!res.ok) {
+      const errData = await res.json().catch(() => null);
+      throw new Error((errData && errData.error) || `HTTP ${res.status}`);
+    }
+    const pdfBlob = await res.blob();
     const pdfFileName = fileName.replace(/\.docx$/i, '.pdf');
     downloadBlob(pdfBlob, pdfFileName);
     setStatus(`Berhasil! File "${pdfFileName}" sudah didownload.`, 'success');
