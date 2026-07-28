@@ -368,9 +368,30 @@ function setDriveStatus(text) {
   if (el) el.textContent = text || '';
 }
 
-// Nama key localStorage buat nandain "user ini pernah login & consent
-// sebelumnya" — cuma nyimpen flag boolean, BUKAN token asli, jadi aman.
+// Nama key localStorage/sessionStorage buat sesi Drive.
 const DRIVE_CONSENT_FLAG = 'gdrive_consented_before';
+const DRIVE_TOKEN_CACHE_KEY = 'gdrive_token_cache';
+
+// Kasih jeda 2 menit sebelum expiry asli, biar gak kepepet pas dipake.
+const DRIVE_TOKEN_SAFETY_MARGIN_MS = 2 * 60 * 1000;
+
+function cacheDriveToken(accessToken, expiresInSeconds) {
+  const expiresAt = Date.now() + (expiresInSeconds * 1000);
+  sessionStorage.setItem(DRIVE_TOKEN_CACHE_KEY, JSON.stringify({ accessToken, expiresAt }));
+}
+
+function getCachedDriveToken() {
+  try {
+    const raw = sessionStorage.getItem(DRIVE_TOKEN_CACHE_KEY);
+    if (!raw) return null;
+    const { accessToken, expiresAt } = JSON.parse(raw);
+    if (!accessToken || !expiresAt) return null;
+    if (Date.now() > expiresAt - DRIVE_TOKEN_SAFETY_MARGIN_MS) return null; // udah/hampir expired
+    return accessToken;
+  } catch {
+    return null;
+  }
+}
 
 /* Dipanggil sekali pas halaman kebuka. GIS di-load async lewat
    <script> di index.html, jadi kita nunggu sampai siap. */
@@ -385,6 +406,7 @@ function initDriveAuth() {
     callback: (response) => {
       if (response && response.access_token) {
         driveAccessToken = response.access_token;
+        cacheDriveToken(response.access_token, response.expires_in || 3600);
         localStorage.setItem(DRIVE_CONSENT_FLAG, '1');
         document.getElementById('driveLoginBtn').textContent = 'Login ulang Google Drive';
         setDriveStatus('Berhasil login — nomor otomatis diambil dari Google Drive.');
@@ -405,9 +427,19 @@ function initDriveAuth() {
     },
   });
 
-  // Kalau sebelumnya pernah berhasil login & consent, coba re-auth
-  // diam-diam (tanpa popup) tiap kali halaman dibuka/di-refresh, jadi
-  // gak perlu klik manual selama sesi Google di browser masih aktif.
+  // 1) Kalau ada token yang masih valid di sessionStorage (dari refresh
+  //    sebelumnya di tab yang sama), langsung pakai itu — TANPA popup
+  //    sama sekali.
+  const cachedToken = getCachedDriveToken();
+  if (cachedToken) {
+    driveAccessToken = cachedToken;
+    document.getElementById('driveLoginBtn').textContent = 'Login ulang Google Drive';
+    setDriveStatus('Sesi Google Drive masih aktif.');
+    return;
+  }
+
+  // 2) Kalau nggak ada token valid di cache, tapi sebelumnya pernah
+  //    consent, baru coba silent re-auth (yang mungkin kedip sebentar).
   if (localStorage.getItem(DRIVE_CONSENT_FLAG) === '1') {
     setDriveStatus('Login otomatis...');
     driveTokenClient.requestAccessToken({ prompt: '' });
@@ -432,6 +464,7 @@ async function getMaxNumberFromDrive(folderId) {
   });
   if (res.status === 401) {
     driveAccessToken = null;
+    sessionStorage.removeItem(DRIVE_TOKEN_CACHE_KEY);
     document.getElementById('driveLoginBtn').textContent = 'Login Google Drive';
     throw new Error('Login Drive kedaluwarsa, klik tombol Login lagi');
   }
