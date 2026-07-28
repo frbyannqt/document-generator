@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title id="pageTitle">Generator Dokumen</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,500&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<style>
+  :root{
+    --bg:#262624;
+    --surface:#33322F;
+    --border:rgba(255,255,255,0.08);
+    --border-strong:rgba(255,255,255,0.14);
+    --ink-100:#F5F4EF;
+    --ink-300:#B0AEA3;
+    --ink-500:#7A786C;
+    --accent:#D97757;
+    --accent-hover:#C2643F;
+    --accent-wash:rgba(217,119,87,0.12);
+    --red-400:#E0685F;
+    --green-400:#4CAF7D;
+    --radius:8px;
+    --radius-sm:6px;
+    --font-serif:'Fraunces', Georgia, serif;
+    --font-sans:'Inter', 'Segoe UI', sans-serif;
+    --font-mono:'IBM Plex Mono', 'Courier New', monospace;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    font-family:var(--font-sans);
+    background:var(--bg);
+    color:var(--ink-100);
+    min-height:100vh;
+    padding:36px 20px 72px;
+  }
+  ::selection{background:var(--accent-wash);color:var(--ink-100);}
+
+  .wrap{max-width:1180px;margin:0 auto;}
+
+  /* Brand */
+  .brand{display:flex;align-items:center;gap:14px;margin-bottom:28px;flex-wrap:wrap;}
+  .brand-mark{
+    width:42px;height:42px;border-radius:var(--radius);
+    background:var(--accent);
+    display:flex;align-items:center;justify-content:center;
+    font-weight:600;color:#241a14;font-size:14px;font-family:var(--font-sans);
+    letter-spacing:0.2px;
+    flex-shrink:0;
+  }
+  .brand h1{
+    font-family:var(--font-serif);
+    font-weight:500;
+    font-size:23px;
+    letter-spacing:0.1px;
+    margin:0;
+    color:var(--ink-100);
+  }
+  .brand p{
+    margin:3px 0 0;
+    font-size:12px;
+    color:var(--ink-300);
+    letter-spacing:0.3px;
+  }
+
+  /* Mode bar */
+  .mode-bar{
+    display:flex;gap:16px;flex-wrap:wrap;
+    background:var(--surface);
+    border:0.5px solid var(--border);
+    border-radius:var(--radius);
+    padding:16px 18px;
+    margin-bottom:24px;
+  }
+  .mode-field{display:flex;flex-direction:column;gap:7px;min-width:200px;flex:1;}
+  .mode-field label{
+    font-size:11.5px;color:var(--ink-300);letter-spacing:0.2px;
+  }
+
+  .layout{display:grid;grid-template-columns:1.5fr 1fr;gap:20px;align-items:start;}
+  @media (max-width:900px){ .layout{grid-template-columns:1fr;} }
+
+  .panel{
+    background:var(--surface);
+    border:0.5px solid var(--border);
+    border-radius:var(--radius);
+    padding:22px;
+  }
+  .panel + .panel{margin-top:20px;}
+  .panel h2{
+    font-family:var(--font-sans);font-weight:600;font-size:14px;margin:0 0 16px;color:var(--ink-100);
+    letter-spacing:0.1px;
+    padding-bottom:12px;
+    border-bottom:0.5px solid var(--border);
+  }
+
+  .field-row{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:14px;}
+  @media (max-width:560px){ .field-row{grid-template-columns:1fr;} }
+  .field{display:flex;flex-direction:column;gap:6px;margin-bottom:14px;}
+  .field label{font-size:12px;color:var(--ink-300);letter-spacing:0.1px;}
+
+  input[type=text], input[type=number], input[type=date], textarea, select{
+    background:var(--bg);border:0.5px solid var(--border-strong);border-radius:var(--radius-sm);
+    color:var(--ink-100);padding:10px 12px;font-size:14px;font-family:var(--font-sans);
+    outline:none;transition:border-color .12s, box-shadow .12s;width:100%;
+  }
+  input:focus, textarea:focus, select:focus{
+    border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-wash);
+  }
+  input::placeholder, textarea::placeholder{color:var(--ink-500);}
+  textarea{resize:vertical;min-height:56px;}
+  .gem-textarea{min-height:130px;}
+  .hint{font-size:11.5px;color:var(--ink-500);}
+
+  select{
+    appearance:none;
+    -webkit-appearance:none;
+    background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1L5 5L9 1' stroke='%23B0AEA3' stroke-width='1.3' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+    background-repeat:no-repeat;
+    background-position:right 12px center;
+    padding-right:30px;
+  }
+
+  /* Items table */
+  .items-table{width:100%;border-collapse:collapse;margin-top:2px;}
+  .items-table th{
+    font-size:11px;letter-spacing:0.2px;color:var(--ink-500);
+    text-align:left;padding:0 8px 10px;font-weight:500;
+    border-bottom:0.5px solid var(--border);
+  }
+  .items-table td{padding:8px 6px;vertical-align:middle;border-bottom:0.5px solid var(--border);}
+  .items-table tbody tr:last-child td{border-bottom:none;}
+  .items-table td.col-no{width:24px;text-align:center;color:var(--ink-500);font-size:13px;font-family:var(--font-mono);}
+  .items-table td.col-qty, .items-table td.col-harga{width:110px;}
+  .items-table td.col-qty input, .items-table td.col-harga input{font-family:var(--font-mono);}
+  .items-table td.col-jumlah{width:120px;text-align:right;color:var(--ink-100);font-size:13px;font-family:var(--font-mono);white-space:nowrap;}
+  .items-table td.col-del{width:32px;text-align:center;}
+  .del-btn{
+    background:transparent;border:0.5px solid var(--border-strong);color:var(--ink-500);
+    width:26px;height:26px;border-radius:var(--radius-sm);cursor:pointer;font-size:14px;line-height:1;transition:all .12s;
+  }
+  .del-btn:hover{border-color:var(--red-400);color:var(--red-400);}
+
+  .btn-ghost{
+    background:transparent;border:0.5px solid var(--border-strong);color:var(--ink-100);
+    padding:9px 14px;border-radius:var(--radius-sm);cursor:pointer;font-size:13px;font-family:var(--font-sans);font-weight:500;
+    transition:border-color .12s, background .12s;
+  }
+  .btn-ghost:hover{border-color:var(--ink-300);background:rgba(255,255,255,0.03);}
+
+  .add-row-btn{margin-top:12px;width:100%;}
+
+  .discount-row{display:flex;gap:8px;}
+  .discount-row select{flex:0 0 84px;}
+  .discount-row input{font-family:var(--font-mono);}
+
+  /* Summary */
+  .summary-line{
+    display:flex;justify-content:space-between;align-items:baseline;padding:10px 0;
+    border-bottom:0.5px solid var(--border);font-size:14px;
+  }
+  .summary-line:last-of-type{border-bottom:none;}
+  .summary-line .label{color:var(--ink-300);font-size:13px;}
+  .summary-line .value{font-weight:500;color:var(--ink-100);font-family:var(--font-mono);font-size:13.5px;}
+  .summary-line.total{margin-top:8px;padding-top:16px;border-top:0.5px solid var(--border-strong);border-bottom:none;}
+  .summary-line.total .label{color:var(--ink-300);font-size:12.5px;letter-spacing:0.2px;}
+  .summary-line.total .value{font-size:24px;color:var(--accent);font-family:var(--font-serif);font-weight:500;}
+
+  .terbilang-box{
+    margin-top:16px;background:var(--bg);border:0.5px solid var(--border);
+    border-left:2px solid var(--accent);border-radius:var(--radius-sm);padding:12px 14px;
+    font-size:13px;font-style:italic;color:var(--ink-300);min-height:18px;
+  }
+
+  .generate-btn{
+    margin-top:18px;width:100%;background:var(--accent);
+    color:#241a14;border:none;padding:13px 18px;border-radius:var(--radius-sm);font-size:14.5px;font-weight:600;
+    letter-spacing:0.1px;cursor:pointer;font-family:var(--font-sans);
+    transition:background .12s;
+  }
+  .generate-btn:hover{background:var(--accent-hover);}
+  .generate-btn:disabled{opacity:0.5;cursor:not-allowed;}
+
+  .status-msg{margin-top:10px;font-size:12.5px;text-align:center;min-height:16px;}
+  .status-msg.error{color:var(--red-400);}
+  .status-msg.success{color:var(--green-400);}
+
+  .filename-preview{margin-top:8px;font-size:11.5px;color:var(--ink-500);text-align:center;word-break:break-all;font-family:var(--font-mono);}
+
+  [data-hide="true"]{display:none !important;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="brand">
+    <div class="brand-mark" id="brandMark">PT</div>
+    <div>
+      <h1 id="brandTitle">Generator Invoice</h1>
+      <p id="brandSubtitle">PT. Latansa Madani Safety</p>
+    </div>
+  </div>
+
+  <div class="mode-bar">
+    <div class="mode-field">
+      <label for="selJenis">Jenis surat</label>
+      <select id="selJenis">
+        <option value="invoice">Invoice</option>
+        <option value="penawaran">Surat Penawaran</option>
+      </select>
+    </div>
+    <div class="mode-field">
+      <label for="selEntitas">Entitas</label>
+      <select id="selEntitas">
+        <option value="pt">PT. Latansa Madani Safety</option>
+        <option value="cv">CV. Anugerah Jaya</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="mode-bar" id="driveBar" style="margin-bottom:24px;">
+    <div class="mode-field" style="flex:0 0 auto;">
+      <label>&nbsp;</label>
+      <button type="button" class="btn-ghost" id="driveLoginBtn">Login Google Drive</button>
+    </div>
+    <div class="mode-field" style="justify-content:flex-end;">
+      <label>&nbsp;</label>
+      <span class="hint" id="driveStatusText">Belum login — nomor surat pakai default manual.</span>
+    </div>
+  </div>
+
+  <div class="layout">
+    <!-- FORM -->
+    <div>
+      <div class="panel">
+        <h2>Isi otomatis dari hasil AI</h2>
+        <p class="hint" id="gemHint" style="margin-top:-8px;margin-bottom:12px;">Tempel hasil ekstraksi dari Gem/AI di sini, lalu klik tombol untuk mengisi form secara otomatis.</p>
+        <div class="field">
+          <textarea id="gemInput" class="gem-textarea" placeholder="Tempel hasil dari AI di sini..."></textarea>
+        </div>
+        <button type="button" class="btn-ghost" id="btnParseGem" style="width:100%;">Parse &amp; isi form otomatis</button>
+        <div class="status-msg" id="gemStatusMsg"></div>
+      </div>
+
+      <div class="panel">
+        <h2 id="dataPanelTitle">Data Invoice</h2>
+
+        <div class="field-row">
+          <div class="field">
+            <label for="nomor">Nomor</label>
+            <div style="display:flex;gap:8px;">
+              <input type="text" id="nomor" style="flex:1;">
+              <button type="button" class="btn-ghost" id="refreshNomorBtn" title="Ambil nomor lanjutan otomatis dari folder Lokal" style="flex:0 0 auto;padding:9px 12px;">&#8635;</button>
+            </div>
+            <span class="hint" id="nomorRefreshHint"></span>
+          </div>
+          <div class="field">
+            <label for="tanggal">Tanggal</label>
+            <input type="date" id="tanggal">
+          </div>
+        </div>
+
+        <!-- Field khusus INVOICE (PO) -->
+        <div class="field-row" id="poFieldsRow">
+          <div class="field">
+            <label id="poDateLabel" for="poDate">Tgl. PO</label>
+            <input type="text" id="poDate">
+          </div>
+          <div class="field">
+            <label id="poNoLabel" for="poNo">Nomor PO</label>
+            <input type="text" id="poNo">
+          </div>
+        </div>
+
+        <!-- Field khusus PENAWARAN (Perihal & Lampiran) -->
+        <div class="field-row" id="perihalLampiranRow">
+          <div class="field" id="lampiranField">
+            <label for="lampiran">Lampiran</label>
+            <input type="text" id="lampiran" value="-">
+          </div>
+          <div class="field" id="perihalField">
+            <label for="perihal">Perihal</label>
+            <input type="text" id="perihal" value="Surat Penawaran">
+          </div>
+        </div>
+
+        <div class="field">
+          <label id="namaClientLabel" for="namaClient">Nama client</label>
+          <input type="text" id="namaClient" placeholder="mis. PT. Contoh Jaya">
+        </div>
+
+        <div class="field" id="alamatField">
+          <label for="alamatClient">Alamat client</label>
+          <textarea id="alamatClient" placeholder="Alamat lengkap client"></textarea>
+        </div>
+
+        <h2 style="margin-top:24px;" id="itemsPanelTitle">Rincian item</h2>
+        <table class="items-table">
+          <thead>
+            <tr>
+              <th class="col-no">No</th>
+              <th id="itemNameHeader">Nama barang / jasa</th>
+              <th class="col-qty">Qty</th>
+              <th class="col-harga" id="itemHargaHeader">Harga satuan</th>
+              <th class="col-jumlah">Jumlah</th>
+              <th class="col-del"></th>
+            </tr>
+          </thead>
+          <tbody id="itemsBody"></tbody>
+        </table>
+        <button type="button" class="btn-ghost add-row-btn" id="addRowBtn">+ Tambah item</button>
+
+        <h2 style="margin-top:24px;">Diskon &amp; PPN</h2>
+        <div class="field-row">
+          <div class="field">
+            <label for="diskon">Diskon</label>
+            <div class="discount-row">
+              <input type="text" id="diskon" placeholder="0" value="0">
+              <select id="diskonType">
+                <option value="nominal">Rp</option>
+                <option value="percent">%</option>
+              </select>
+            </div>
+          </div>
+          <div class="field">
+            <label for="ppn">PPN (%)</label>
+            <input type="number" id="ppn" min="0" step="0.5" value="11">
+            <span class="hint">Isi 0 untuk menyembunyikan baris Sub Total &amp; PPN</span>
+          </div>
+        </div>
+
+        <h2 style="margin-top:24px;">Keterangan</h2>
+        <div class="field">
+          <label for="keterangan">Keterangan</label>
+          <textarea id="keterangan" placeholder="Satu baris = satu poin keterangan"></textarea>
+          <span class="hint">Baris kosong otomatis diabaikan. Kosongkan semua untuk tidak menampilkan keterangan.</span>
+        </div>
+
+        <h2 style="margin-top:24px;">Penandatangan</h2>
+        <div class="field-row">
+          <div class="field">
+            <label for="namaTtd">Nama penandatangan</label>
+            <input type="text" id="namaTtd">
+          </div>
+          <div class="field" id="kontakTtdField">
+            <label for="kontakTtd">Kontak</label>
+            <input type="text" id="kontakTtd">
+          </div>
+        </div>
+        <div class="field">
+          <label for="signMode">Tanda tangan</label>
+          <select id="signMode">
+            <option value="sign">Dengan Tanda Tangan</option>
+            <option value="nosign">Tanpa Tanda Tangan</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- SUMMARY -->
+    <div>
+      <div class="panel">
+        <h2>Ringkasan</h2>
+        <div class="summary-line" id="rowSubtotal">
+          <span class="label">Sub total</span>
+          <span class="value" id="sumSubtotal">0</span>
+        </div>
+        <div class="summary-line" id="rowDiskon">
+          <span class="label">Diskon</span>
+          <span class="value" id="sumDiskon">0</span>
+        </div>
+        <div class="summary-line" id="rowPpn">
+          <span class="label" id="sumPpnLabel">PPN</span>
+          <span class="value" id="sumPpn">0</span>
+        </div>
+        <div class="summary-line total">
+          <span class="label">Grand total</span>
+          <span class="value" id="sumGrandtotal">0</span>
+        </div>
+
+        <div class="terbilang-box" id="terbilangBox">Nol Rupiah</div>
+
+        <button type="button" class="generate-btn" id="generateBtn">Download dokumen (.docx)</button>
+        <div class="status-msg" id="statusMsg"></div>
+        <div class="filename-preview" id="filenamePreview"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Template docx (base64) - dimuat sebagai variabel global lewat script tag biasa -->
+<script src="templates/invoice-pt.js"></script>
+<script src="templates/invoice-cv.js"></script>
+<script src="templates/penawaran-pt.js"></script>
+<script src="templates/penawaran-cv.js"></script>
+
+<script src="app.js"></script>
+</body>
+</html>
