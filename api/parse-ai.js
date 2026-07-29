@@ -211,9 +211,23 @@ module.exports = async (req, res) => {
     return;
   }
 
-  const { fileBase64, mimeType, chatText } = req.body || {};
-  if (!fileBase64 && !chatText) {
-    res.status(400).json({ error: 'Kirim fileBase64 dan/atau chatText, minimal salah satu.' });
+  const { fileBase64, mimeType, files, chatText } = req.body || {};
+
+  // Dukung 2 bentuk: files[] (multi-file, dipake UI baru) atau
+  // fileBase64+mimeType tunggal (buat backward-compat).
+  const fileParts = [];
+  if (Array.isArray(files)) {
+    files.forEach(f => {
+      if (f && f.fileBase64) {
+        fileParts.push({ fileBase64: f.fileBase64, mimeType: f.mimeType || 'application/octet-stream' });
+      }
+    });
+  } else if (fileBase64) {
+    fileParts.push({ fileBase64, mimeType: mimeType || 'application/octet-stream' });
+  }
+
+  if (fileParts.length === 0 && !chatText) {
+    res.status(400).json({ error: 'Kirim files[] dan/atau chatText, minimal salah satu.' });
     return;
   }
 
@@ -226,9 +240,9 @@ module.exports = async (req, res) => {
   }
 
   const parts = [];
-  if (fileBase64) {
-    parts.push({ inlineData: { mimeType: mimeType || 'application/octet-stream', data: fileBase64 } });
-  }
+  fileParts.forEach(fp => {
+    parts.push({ inlineData: { mimeType: fp.mimeType, data: fp.fileBase64 } });
+  });
   if (chatText && chatText.trim()) {
     parts.push({ text: chatText.trim() });
   }
