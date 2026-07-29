@@ -238,13 +238,28 @@
     <!-- FORM -->
     <div>
       <div class="panel">
-        <h2>Isi otomatis dari hasil AI</h2>
-        <p class="hint" id="gemHint" style="margin-top:-8px;margin-bottom:12px;">Tempel hasil ekstraksi dari Gem/AI di sini, lalu klik tombol untuk mengisi form secara otomatis.</p>
-        <div class="field">
-          <textarea id="gemInput" class="gem-textarea" placeholder="Tempel hasil dari AI di sini..."></textarea>
+        <h2>Ekstrak otomatis (dokumen / chat)</h2>
+        <p class="hint" id="gemHint" style="margin-top:-8px;margin-bottom:12px;">Upload dokumen PO (PDF/foto), tempel chat WhatsApp, atau dua-duanya sekaligus — AI bakal ekstrak & isi form otomatis.</p>
+        <div class="field" style="margin-bottom:10px;">
+          <label for="gemFile">Dokumen PO (opsional, PDF/foto)</label>
+          <input type="file" id="gemFile" accept=".pdf,.png,.jpg,.jpeg,.webp">
         </div>
-        <button type="button" class="btn-ghost" id="btnParseGem" style="width:100%;">Parse &amp; isi form otomatis</button>
+        <div class="field">
+          <label for="gemInput">Chat/caption (opsional)</label>
+          <textarea id="gemInput" class="gem-textarea" placeholder="Tempel percakapan WhatsApp di sini kalau ada..."></textarea>
+        </div>
+        <button type="button" class="btn-ghost" id="btnParseGem" style="width:100%;">Ekstrak &amp; isi form otomatis</button>
         <div class="status-msg" id="gemStatusMsg"></div>
+      </div>
+
+      <div class="panel">
+        <h2>Isi otomatis dari hasil AI (manual paste)</h2>
+        <p class="hint" style="margin-top:-8px;margin-bottom:12px;">Alternatif kalau mau tetep pake Gem manual: tempel hasil ekstraksinya langsung di sini.</p>
+        <div class="field">
+          <textarea id="gemManualInput" class="gem-textarea" placeholder="Tempel hasil dari AI di sini..."></textarea>
+        </div>
+        <button type="button" class="btn-ghost" id="btnParseGemManual" style="width:100%;">Parse &amp; isi form otomatis</button>
+        <div class="status-msg" id="gemManualStatusMsg"></div>
       </div>
 
       <div class="panel">
