@@ -1192,6 +1192,63 @@ function applyModeToUI() {
 }
 
 /* ===================== Parse Gem button (event handler dipasang sekali, logic-nya cek mode aktif) ===================== */
+/* ===================== Manajemen file upload (multi-file, bisa dihapus tanpa refresh) ===================== */
+let selectedGemFiles = []; // array of File
+
+function renderGemFileList() {
+  const listEl = document.getElementById('gemFileList');
+  const emptyHint = document.getElementById('gemFileEmptyHint');
+  const clearAllBtn = document.getElementById('gemFileClearAll');
+
+  listEl.innerHTML = '';
+  if (selectedGemFiles.length === 0) {
+    emptyHint.style.display = '';
+    clearAllBtn.style.display = 'none';
+    return;
+  }
+
+  emptyHint.style.display = 'none';
+  clearAllBtn.style.display = selectedGemFiles.length > 1 ? '' : 'none';
+
+  selectedGemFiles.forEach((file, idx) => {
+    const li = document.createElement('li');
+    const nameSpan = document.createElement('span');
+    nameSpan.textContent = file.name;
+    nameSpan.title = file.name;
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'file-remove-btn';
+    removeBtn.innerHTML = '&times;';
+    removeBtn.title = 'Hapus file ini';
+    removeBtn.addEventListener('click', () => {
+      selectedGemFiles.splice(idx, 1);
+      renderGemFileList();
+    });
+    li.appendChild(nameSpan);
+    li.appendChild(removeBtn);
+    listEl.appendChild(li);
+  });
+}
+
+function setupGemFileInput() {
+  const fileInput = document.getElementById('gemFile');
+  fileInput.addEventListener('change', () => {
+    // Gabungin file baru ke daftar yang udah ada (biar "Pilih File" lagi
+    // nambah, bukan nimpa), lalu reset value input biar bisa milih file
+    // yang sama lagi kalau perlu & event "change" tetep kepicu.
+    Array.from(fileInput.files).forEach(f => selectedGemFiles.push(f));
+    fileInput.value = '';
+    renderGemFileList();
+  });
+
+  document.getElementById('gemFileClearAll').addEventListener('click', () => {
+    selectedGemFiles = [];
+    renderGemFileList();
+  });
+
+  renderGemFileList();
+}
+
 function runParseAndFill(rawText, mode, statusEl) {
   const parsed = parseGemOutput(rawText, mode);
   applyParsedDataToForm(parsed, mode);
@@ -1228,11 +1285,9 @@ function setupGemParser() {
     const mode = getMode();
     const btn = document.getElementById('btnParseGem');
     const statusEl = document.getElementById('gemStatusMsg');
-    const fileInput = document.getElementById('gemFile');
-    const file = fileInput.files[0];
     const chatText = document.getElementById('gemInput').value.trim();
 
-    if (!file && !chatText) {
+    if (selectedGemFiles.length === 0 && !chatText) {
       statusEl.className = 'status-msg error';
       statusEl.textContent = 'Upload dokumen atau tempel chat dulu, minimal salah satu.';
       return;
@@ -1240,13 +1295,17 @@ function setupGemParser() {
 
     btn.disabled = true;
     statusEl.className = 'status-msg';
-    statusEl.textContent = 'Mengekstrak lewat AI...';
+    statusEl.textContent = selectedGemFiles.length > 1
+      ? `Mengekstrak ${selectedGemFiles.length} file lewat AI...`
+      : 'Mengekstrak lewat AI...';
 
     try {
       const payload = { chatText: chatText || undefined };
-      if (file) {
-        payload.fileBase64 = await blobToBase64(file);
-        payload.mimeType = file.type || 'application/octet-stream';
+      if (selectedGemFiles.length > 0) {
+        payload.files = await Promise.all(selectedGemFiles.map(async f => ({
+          fileBase64: await blobToBase64(f),
+          mimeType: f.type || 'application/octet-stream',
+        })));
       }
 
       const res = await fetch('/api/parse-ai', {
@@ -1340,6 +1399,7 @@ document.addEventListener('DOMContentLoaded', () => {
     btn.disabled = false;
   });
 
+  setupGemFileInput();
   setupGemParser();
 
   initDriveAuth();
