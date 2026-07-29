@@ -1192,30 +1192,90 @@ function applyModeToUI() {
 }
 
 /* ===================== Parse Gem button (event handler dipasang sekali, logic-nya cek mode aktif) ===================== */
+function runParseAndFill(rawText, mode, statusEl) {
+  const parsed = parseGemOutput(rawText, mode);
+  applyParsedDataToForm(parsed, mode);
+  statusEl.className = 'status-msg success';
+  const extra = mode.gemMode === 'invoice'
+    ? `${parsed.items.length} item terisi otomatis ke form.`
+    : `Nama client dan ${parsed.items.length} item terisi otomatis. Cek/isi Nomor Surat, Tanggal, Perihal${mode.showLampiran ? ', Lampiran' : ''} secara manual.`;
+  statusEl.textContent = `Berhasil! ${extra}`;
+}
+
 function setupGemParser() {
-  document.getElementById('btnParseGem').addEventListener('click', () => {
+  // --- Tombol lama: paste manual hasil dari Gem (fallback) ---
+  document.getElementById('btnParseGemManual').addEventListener('click', () => {
     const mode = getMode();
-    const rawText = document.getElementById('gemInput').value;
-    const statusEl = document.getElementById('gemStatusMsg');
+    const rawText = document.getElementById('gemManualInput').value;
+    const statusEl = document.getElementById('gemManualStatusMsg');
 
     if (!rawText || !rawText.trim()) {
       statusEl.className = 'status-msg error';
       statusEl.textContent = 'Kolom masih kosong, tempel hasil dari AI terlebih dahulu.';
       return;
     }
-
     try {
-      const parsed = parseGemOutput(rawText, mode);
-      applyParsedDataToForm(parsed, mode);
-      statusEl.className = 'status-msg success';
-      const extra = mode.gemMode === 'invoice'
-        ? `${parsed.items.length} item terisi otomatis ke form.`
-        : `Nama client dan ${parsed.items.length} item terisi otomatis. Cek/isi Nomor Surat, Tanggal, Perihal${mode.showLampiran ? ', Lampiran' : ''} secara manual.`;
-      statusEl.textContent = `Berhasil! ${extra}`;
+      runParseAndFill(rawText, mode, statusEl);
     } catch (err) {
       statusEl.className = 'status-msg error';
       statusEl.textContent = 'Gagal parsing: ' + err.message + ' — pastikan format teks sesuai.';
       console.error(err);
+    }
+  });
+
+  // --- Tombol baru: upload dokumen/chat -> Gemini API -> auto isi form ---
+  document.getElementById('btnParseGem').addEventListener('click', async () => {
+    const mode = getMode();
+    const btn = document.getElementById('btnParseGem');
+    const statusEl = document.getElementById('gemStatusMsg');
+    const fileInput = document.getElementById('gemFile');
+    const file = fileInput.files[0];
+    const chatText = document.getElementById('gemInput').value.trim();
+
+    if (!file && !chatText) {
+      statusEl.className = 'status-msg error';
+      statusEl.textContent = 'Upload dokumen atau tempel chat dulu, minimal salah satu.';
+      return;
+    }
+
+    btn.disabled = true;
+    statusEl.className = 'status-msg';
+    statusEl.textContent = 'Mengekstrak lewat AI...';
+
+    try {
+      const payload = { chatText: chatText || undefined };
+      if (file) {
+        payload.fileBase64 = await blobToBase64(file);
+        payload.mimeType = file.type || 'application/octet-stream';
+      }
+
+      const res = await fetch('/api/parse-ai', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        throw new Error((data && data.error) || `HTTP ${res.status}`);
+      }
+
+      const extractedText = (data && data.text) || '';
+
+      // Kalau AI balas pesan penolakan (dokumen gak kebaca / gak ada
+      // permintaan item), tampilin apa adanya, jangan dipaksa di-parse.
+      if (!/NAMA_CLIENT\s*:/i.test(extractedText)) {
+        statusEl.className = 'status-msg error';
+        statusEl.textContent = extractedText || 'AI tidak mengembalikan data yang bisa diproses.';
+        return;
+      }
+
+      runParseAndFill(extractedText, mode, statusEl);
+    } catch (err) {
+      statusEl.className = 'status-msg error';
+      statusEl.textContent = 'Gagal ekstrak otomatis: ' + err.message;
+      console.error(err);
+    } finally {
+      btn.disabled = false;
     }
   });
 }
