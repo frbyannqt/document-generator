@@ -1230,6 +1230,44 @@ function renderGemFileList() {
   });
 }
 
+/* Nangkep gambar yang di-paste (Ctrl+V) langsung di textarea chat —
+   misal screenshot WA yang di-copy — biar gak perlu download-upload
+   manual. Teks yang di-paste tetep jalan normal seperti biasa. */
+function setupGemPasteImage() {
+  const textarea = document.getElementById('gemInput');
+  textarea.addEventListener('paste', (e) => {
+    const items = e.clipboardData && e.clipboardData.items;
+    if (!items) return;
+
+    let imageCount = 0;
+    Array.from(items).forEach((item, idx) => {
+      if (item.kind === 'file' && item.type.startsWith('image/')) {
+        const file = item.getAsFile();
+        if (!file) return;
+        const ext = (item.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+        const named = new File(
+          [file],
+          `paste-${Date.now()}-${idx}.${ext}`,
+          { type: item.type }
+        );
+        selectedGemFiles.push(named);
+        imageCount++;
+      }
+    });
+
+    if (imageCount > 0) {
+      e.preventDefault(); // gambar gak usah nyoba ke-insert sbg teks
+      renderGemFileList();
+      const statusEl = document.getElementById('gemStatusMsg');
+      statusEl.className = 'status-msg success';
+      statusEl.textContent = imageCount > 1
+        ? `${imageCount} gambar dari clipboard ditambahin ke daftar file.`
+        : 'Gambar dari clipboard ditambahin ke daftar file.';
+    }
+    // Kalau yang di-paste teks biasa, dibiarin jalan normal (gak di-preventDefault).
+  });
+}
+
 function setupGemFileInput() {
   const fileInput = document.getElementById('gemFile');
   fileInput.addEventListener('change', () => {
@@ -1400,6 +1438,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   setupGemFileInput();
+  setupGemPasteImage();
   setupGemParser();
 
   initDriveAuth();
