@@ -198,7 +198,7 @@ function getMode() {
 /* Field-field ini punya default yang beda-beda tergantung kombinasi mode.
    Kalau user belum pernah ngedit manual, boleh ditimpa otomatis waktu
    dropdown Jenis Surat / Entitas diganti. */
-const manualFlags = { nomor: false, namaTtd: false, kontakTtd: false, poDate: false, poNo: false };
+const manualFlags = { nomor: false, namaTtd: false, kontakTtd: false, poDate: false, poNo: false, ppn: false };
 
 function markManual(id, key) {
   document.getElementById(id).addEventListener('input', () => { manualFlags[key] = true; });
@@ -1046,6 +1046,7 @@ function parseGemOutput(text, mode) {
   const rawLines = String(text).split('\n').map(l => l.trim()).filter(l => l.length > 0);
 
   let nomorPo = null, tanggalPo = null, namaClient = null, alamatClient = null;
+  let entitas = null, diskon = null;
   let itemStartIndex = -1;
 
   for (let i = 0; i < rawLines.length; i++) {
@@ -1058,6 +1059,10 @@ function parseGemOutput(text, mode) {
       namaClient = line.substring(line.indexOf(':') + 1).trim();
     } else if (/^ALAMAT_CLIENT\s*:/i.test(line)) {
       alamatClient = line.substring(line.indexOf(':') + 1).trim();
+    } else if (/^ENTITAS\s*:/i.test(line)) {
+      entitas = line.substring(line.indexOf(':') + 1).trim();
+    } else if (/^DISKON\s*:/i.test(line)) {
+      diskon = line.substring(line.indexOf(':') + 1).trim();
     } else if (/^ITEM\s*:/i.test(line)) {
       itemStartIndex = i;
       break;
@@ -1092,14 +1097,33 @@ function parseGemOutput(text, mode) {
     tanggalPo: mode.gemMode === 'invoice' ? (tanggalPo !== null ? tanggalPo : '-') : null,
     namaClient,
     alamatClient: mode.gemMode === 'invoice' ? (alamatClient !== null ? alamatClient : '-') : null,
+    entitas,
+    diskon,
     items,
   };
 }
 
 function applyParsedDataToForm(parsed, mode) {
+  // 1) ENTITAS dulu, SEBELUM field lain — karena switch entitas bisa
+  // mengubah default2 lain (judul, nomor otomatis, dst lewat applyModeToUI).
+  // Tetap bisa diubah manual lewat dropdown kapan pun setelah ini.
+  let activeMode = mode;
+  if (parsed.entitas) {
+    const detected = parsed.entitas.trim().toUpperCase();
+    if (detected === 'PT' || detected === 'CV') {
+      const target = detected.toLowerCase();
+      const selEntitas = document.getElementById('selEntitas');
+      if (selEntitas.value !== target) {
+        selEntitas.value = target;
+        applyModeToUI(); // refresh judul/label/nomor-otomatis/default PPN sesuai entitas baru
+        activeMode = getMode();
+      }
+    }
+  }
+
   document.getElementById('namaClient').value = parsed.namaClient;
 
-  if (mode.gemMode === 'invoice') {
+  if (activeMode.gemMode === 'invoice') {
     document.getElementById('poNo').value = parsed.nomorPo;
     manualFlags.poNo = true;
     if (parsed.tanggalPo === '-') {
@@ -1110,6 +1134,24 @@ function applyParsedDataToForm(parsed, mode) {
     }
     manualFlags.poDate = true;
     document.getElementById('alamatClient').value = parsed.alamatClient;
+  }
+
+  // 2) DISKON — isi sesuai deteksi AI (persen/nominal), reset ke 0 kalau
+  // gak ada info diskon sama sekali biar gak nyisa nilai lama gak sengaja.
+  const diskonEl = document.getElementById('diskon');
+  const diskonTypeEl = document.getElementById('diskonType');
+  const diskonRaw = (parsed.diskon || '').trim();
+  if (diskonRaw && diskonRaw !== '-') {
+    if (diskonRaw.endsWith('%')) {
+      diskonTypeEl.value = 'percent';
+      diskonEl.value = digitsOnlyStripLeadingZero(diskonRaw.slice(0, -1).trim()) || '0';
+    } else {
+      diskonTypeEl.value = 'nominal';
+      diskonEl.value = formatRibuan(digitsOnlyStripLeadingZero(diskonRaw));
+    }
+  } else {
+    diskonTypeEl.value = 'nominal';
+    diskonEl.value = '0';
   }
 
   const itemsBody = document.getElementById('itemsBody');
@@ -1186,6 +1228,13 @@ function applyModeToUI() {
   }
   if (mode.hasKontakTtd && !manualFlags.kontakTtd) {
     document.getElementById('kontakTtd').value = mode.defaultKontakTtd;
+  }
+
+  // PPN default beda per entitas: CV biasanya gak pakai PPN (langsung
+  // grand total), PT pakai 11%. Tetap bisa diubah manual — begitu user
+  // pernah ngetik manual, aturan default ini berhenti nimpa nilainya.
+  if (!manualFlags.ppn) {
+    document.getElementById('ppn').value = mode.entitas === 'cv' ? 0 : 11;
   }
 
   recalc();
@@ -1387,6 +1436,7 @@ document.addEventListener('DOMContentLoaded', () => {
   markManual('kontakTtd', 'kontakTtd');
   markManual('poDate', 'poDate');
   markManual('poNo', 'poNo');
+  markManual('ppn', 'ppn');
 
   document.getElementById('selJenis').addEventListener('change', applyModeToUI);
   document.getElementById('selEntitas').addEventListener('change', applyModeToUI);
